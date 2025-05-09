@@ -6,6 +6,8 @@ structured output.
 import logging
 import shutil
 import subprocess
+import pty
+import os
 from typing import Dict, List, Optional, Union
 
 from pygdbmi.constants import (
@@ -27,6 +29,7 @@ class GdbController:
         self,
         command: Optional[List[str]] = None,
         time_to_check_for_additional_output_sec: float = DEFAULT_TIME_TO_CHECK_FOR_ADDITIONAL_OUTPUT_SEC,
+        use_pty: bool = False
     ) -> None:
         """
         Run gdb as a subprocess. Send commands and receive structured output.
@@ -38,6 +41,8 @@ class GdbController:
         Returns:
             New GdbController object
         """
+
+        self.use_pty = use_pty
 
         if command is None:
             command = DEFAULT_GDB_LAUNCH_COMMAND
@@ -70,6 +75,8 @@ class GdbController:
             else:
                 self.abs_gdb_path = abs_gdb_path
 
+        self._master_fd = None
+        self._slave_fd = None
         self.spawn_new_gdb_subprocess()
 
     def spawn_new_gdb_subprocess(self) -> int:
@@ -86,15 +93,24 @@ class GdbController:
 
         logger.debug(f'Launching gdb: {" ".join(self.command)}')
 
+        pipe = subprocess.PIPE
+
+        if self.use_pty:
+            self._master_fd, self._slave_fd = pty.openpty()
+            pipe = self._slave_fd
+
         # Use pipes to the standard streams
         self.gdb_process = subprocess.Popen(
             self.command,
             shell=False,
-            stdout=subprocess.PIPE,
+            stdout=pipe,
             stdin=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=pipe,
             bufsize=0,
         )
+
+        if self.use_pty:
+            self.gdb_process.stdout = os.fdopen(self._master_fd, "rb")
 
         assert self.gdb_process.stdin is not None
         assert self.gdb_process.stdout is not None
