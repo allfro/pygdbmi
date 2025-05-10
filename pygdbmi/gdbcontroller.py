@@ -110,7 +110,7 @@ class GdbController:
         )
 
         if self.use_pty:
-            self.gdb_process.stdout = os.fdopen(self._master_fd, "rb", buffering=0)
+            self.gdb_process.stdout = os.fdopen(self._master_fd, "rb+", buffering=0)
 
         assert self.gdb_process.stdin is not None
         assert self.gdb_process.stdout is not None
