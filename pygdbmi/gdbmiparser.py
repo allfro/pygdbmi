@@ -119,7 +119,7 @@ def _parse_mi_result(match: Match, stream: StringStream) -> Dict:
     }
 
 
-def _parse_mi_output(match: Match, stream: StringStream, output_type: str) -> Dict:
+def _parse_mi_output(match: Match | Dict, _: Optional[StringStream], output_type: str) -> Dict:
     """Parser function for matches against a console, log or target record.
 
     The record type must be specified in output_type.

@@ -17,7 +17,6 @@ from pygdbmi.constants import (
     GdbTimeoutError,
 )
 
-
 if USING_WINDOWS:
     import msvcrt
     from ctypes import POINTER, WinError, byref, windll, wintypes  # type: ignore
@@ -25,20 +24,19 @@ if USING_WINDOWS:
 else:
     import fcntl
 
-
 __all__ = ["IoManager"]
-
 
 logger = logging.getLogger(__name__)
 
 
 class IoManager:
     def __init__(
-        self,
-        stdin: IO[bytes],
-        stdout: IO[bytes],
-        stderr: Optional[IO[bytes]],
-        time_to_check_for_additional_output_sec: float = DEFAULT_TIME_TO_CHECK_FOR_ADDITIONAL_OUTPUT_SEC,
+            self,
+            stdin: IO[bytes],
+            stdout: IO[bytes],
+            stderr: Optional[IO[bytes]],
+            target_stdio: IO[bytes],
+            time_to_check_for_additional_output_sec: float = DEFAULT_TIME_TO_CHECK_FOR_ADDITIONAL_OUTPUT_SEC,
     ) -> None:
         """
         Manage I/O for file objects created before calling this class
@@ -49,31 +47,33 @@ class IoManager:
         self.stdin = stdin
         self.stdout = stdout
         self.stderr = stderr
+        self.target_stdio = target_stdio
 
         self.stdin_fileno = self.stdin.fileno()
         self.stdout_fileno = self.stdout.fileno()
         self.stderr_fileno = self.stderr.fileno() if self.stderr else -1
 
-        self.read_list: List[int] = []
+        self.read_list: List[IO] = [target_stdio]
         if self.stdout:
-            self.read_list.append(self.stdout_fileno)
-        self.write_list = [self.stdin_fileno]
+            self.read_list.append(self.stdout)
+        self.write_list = [self.stdin_fileno, target_stdio]
 
         self._incomplete_output: Dict[str, Any] = {"stdout": None, "stderr": None}
         self.time_to_check_for_additional_output_sec = (
             time_to_check_for_additional_output_sec
         )
         self._allow_overwrite_timeout_times = (
-            self.time_to_check_for_additional_output_sec > 0
+                self.time_to_check_for_additional_output_sec > 0
         )
+
         _make_non_blocking(self.stdout)
         if self.stderr:
             _make_non_blocking(self.stderr)
 
     def get_gdb_response(
-        self,
-        timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
-        raise_error_on_timeout: bool = True,
+            self,
+            timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
+            raise_error_on_timeout: bool = True,
     ) -> List[Dict]:
         """Get response from GDB, and block while doing so. If GDB does not have any response ready to be read
         by timeout_sec, an exception is raised.
@@ -146,6 +146,8 @@ class IoManager:
         """Get responses on unix-like system. Use select to wait for output."""
         timeout_time_sec = time.time() + timeout_sec
         responses = []
+        target_output = b''
+        raw_output = b''
         while True:
             select_timeout = timeout_time_sec - time.time()
             if select_timeout <= 0:
@@ -154,12 +156,16 @@ class IoManager:
             responses_list = None  # to avoid infinite loop if using Python 2
             for fileno in events:
                 # new data is ready to read
-                if fileno == self.stdout_fileno:
+                if fileno == self.stdout:
                     self.stdout.flush()
                     raw_output = self.stdout.read()
                     stream = "stdout"
 
-                elif fileno == self.stderr_fileno:
+                elif fileno == self.target_stdio:
+                    target_output += self.target_stdio.read(2048)
+                    stream = "stdout"
+
+                elif fileno == self.stderr:
                     assert self.stderr is not None
                     self.stderr.flush()
                     raw_output = self.stderr.read()
@@ -185,10 +191,11 @@ class IoManager:
             elif time.time() > timeout_time_sec:
                 break
 
+        responses.append(gdbmiparser._parse_mi_output(dict(payload=target_output.decode(errors="replace")), None, "output"))
         return responses
 
     def _get_responses_list(
-        self, raw_output: bytes, stream: str
+            self, raw_output: bytes, stream: str
     ) -> List[Dict[Any, Any]]:
         """Get parsed response list from string output
         Args:
@@ -223,11 +230,12 @@ class IoManager:
         return responses
 
     def write(
-        self,
-        mi_cmd_to_write: Union[str, List[str]],
-        timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
-        raise_error_on_timeout: bool = True,
-        read_response: bool = True,
+            self,
+            mi_cmd_to_write: Union[str, List[str]],
+            timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
+            raise_error_on_timeout: bool = True,
+            read_response: bool = True,
+            to_tty: bool = False,
     ) -> List[Dict]:
         """Write to gdb process. Block while parsing responses from gdb for a maximum of timeout_sec.
 
@@ -273,10 +281,15 @@ class IoManager:
         for fileno in outputready:
             if fileno == self.stdin_fileno:
                 # ready to write
-                self.stdin.write(mi_cmd_to_write_nl.encode())  # type: ignore
-                # must flush, otherwise gdb won't realize there is data
-                # to evaluate, and we won't get a response
-                self.stdin.flush()  # type: ignore
+                if not to_tty:
+                    self.stdin.write(mi_cmd_to_write_nl.encode())  # type: ignore
+                    # must flush, otherwise gdb won't realize there is data
+                    # to evaluate, and we won't get a response
+                    self.stdin.flush()  # type: ignore
+            elif fileno == self.target_stdio:
+                if to_tty:
+                    self.target_stdio.write(mi_cmd_to_write_nl.encode())
+                    self.target_stdio.flush()
             else:
                 logger.error("got unexpected fileno %d" % fileno)
 
@@ -290,7 +303,7 @@ class IoManager:
 
 
 def _buffer_incomplete_responses(
-    raw_output: Optional[bytes], buf: Optional[bytes]
+        raw_output: Optional[bytes], buf: Optional[bytes]
 ) -> Tuple[Optional[bytes], Optional[bytes]]:
     """It is possible for some of gdb's output to be read before it completely finished its response.
     In that case, a partial mi response was read, which cannot be parsed into structured data.

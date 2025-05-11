@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import pty
 import os
+import termios
 from typing import Dict, List, Optional, Union
 
 from pygdbmi.constants import (
@@ -16,9 +17,7 @@ from pygdbmi.constants import (
 )
 from pygdbmi.IoManager import IoManager
 
-
 __all__ = ["GdbController"]
-
 
 DEFAULT_GDB_LAUNCH_COMMAND = ["gdb", "--nx", "--quiet", "--interpreter=mi3"]
 logger = logging.getLogger(__name__)
@@ -26,10 +25,9 @@ logger = logging.getLogger(__name__)
 
 class GdbController:
     def __init__(
-        self,
-        command: Optional[List[str]] = None,
-        time_to_check_for_additional_output_sec: float = DEFAULT_TIME_TO_CHECK_FOR_ADDITIONAL_OUTPUT_SEC,
-        use_pty: bool = False
+            self,
+            command: Optional[List[str]] = None,
+            time_to_check_for_additional_output_sec: float = DEFAULT_TIME_TO_CHECK_FOR_ADDITIONAL_OUTPUT_SEC
     ) -> None:
         """
         Run gdb as a subprocess. Send commands and receive structured output.
@@ -42,8 +40,6 @@ class GdbController:
             New GdbController object
         """
 
-        self.use_pty = use_pty
-
         if command is None:
             command = DEFAULT_GDB_LAUNCH_COMMAND
 
@@ -52,6 +48,8 @@ class GdbController:
                 "Adding `--interpreter=mi3` (or similar) is recommended to get structured output. "
                 + "See https://sourceware.org/gdb/onlinedocs/gdb/Mode-Options.html#Mode-Options."
             )
+
+        self.io_manager = None
         self.abs_gdb_path = None  # abs path to gdb executable
         self.command: List[str] = command
         self.time_to_check_for_additional_output_sec = (
@@ -59,7 +57,7 @@ class GdbController:
         )
         self.gdb_process: Optional[subprocess.Popen] = None
         self._allow_overwrite_timeout_times = (
-            self.time_to_check_for_additional_output_sec > 0
+                self.time_to_check_for_additional_output_sec > 0
         )
         gdb_path = command[0]
         if not gdb_path:
@@ -75,8 +73,6 @@ class GdbController:
             else:
                 self.abs_gdb_path = abs_gdb_path
 
-        self._master_fd = None
-        self._slave_fd = None
         self.spawn_new_gdb_subprocess()
 
     def spawn_new_gdb_subprocess(self) -> int:
@@ -93,53 +89,53 @@ class GdbController:
 
         logger.debug(f'Launching gdb: {" ".join(self.command)}')
 
-        pipe = subprocess.PIPE
+        master, slave = pty.openpty()
 
-        if self.use_pty:
-            self._master_fd, self._slave_fd = pty.openpty()
-            pipe = self._slave_fd
+        target_stdio = os.fdopen(master, 'rb+', buffering=0)
+        devpts = os.ttyname(slave)
+
+        attrs = termios.tcgetattr(slave)
+        attrs[3] &= ~(termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHONL)
+        termios.tcsetattr(slave, termios.TCSANOW, attrs)
 
         # Use pipes to the standard streams
         self.gdb_process = subprocess.Popen(
-            self.command,
-            shell=False,
-            stdout=pipe,
+            self.command + ['--tty', devpts],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             stdin=subprocess.PIPE,
-            stderr=pipe,
             bufsize=0,
         )
 
-        if self.use_pty:
-            self.gdb_process.stdout = os.fdopen(self._master_fd, "rb+", buffering=0)
-
-        assert self.gdb_process.stdin is not None
-        assert self.gdb_process.stdout is not None
         self.io_manager = IoManager(
             self.gdb_process.stdin,
             self.gdb_process.stdout,
             self.gdb_process.stderr,
-            self.time_to_check_for_additional_output_sec,
+            target_stdio,
+            self.time_to_check_for_additional_output_sec
         )
+
         return self.gdb_process.pid
 
     def get_gdb_response(
-        self,
-        timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
-        raise_error_on_timeout: bool = True,
+            self,
+            timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
+            raise_error_on_timeout: bool = True,
     ) -> List[Dict]:
         """Get gdb response. See IoManager.get_gdb_response() for details"""
         return self.io_manager.get_gdb_response(timeout_sec, raise_error_on_timeout)
 
     def write(
-        self,
-        mi_cmd_to_write: Union[str, List[str]],
-        timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
-        raise_error_on_timeout: bool = True,
-        read_response: bool = True,
+            self,
+            mi_cmd_to_write: Union[str, List[str]],
+            timeout_sec: float = DEFAULT_GDB_TIMEOUT_SEC,
+            raise_error_on_timeout: bool = True,
+            read_response: bool = True,
+            to_tty: bool = False,
     ) -> List[Dict]:
         """Write command to gdb. See IoManager.write() for details"""
         return self.io_manager.write(
-            mi_cmd_to_write, timeout_sec, raise_error_on_timeout, read_response
+            mi_cmd_to_write, timeout_sec, raise_error_on_timeout, read_response, to_tty
         )
 
     def exit(self) -> None:
