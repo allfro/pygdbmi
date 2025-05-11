@@ -255,7 +255,8 @@ class IoManager:
             timeout_sec = 0
 
         # Ensure proper type of the mi command
-        if isinstance(mi_cmd_to_write, str):
+
+        if isinstance(mi_cmd_to_write, str) or isinstance(mi_cmd_to_write, bytes):
             mi_cmd_to_write_str = mi_cmd_to_write
         elif isinstance(mi_cmd_to_write, list):
             mi_cmd_to_write_str = "\n".join(mi_cmd_to_write)
@@ -267,7 +268,9 @@ class IoManager:
 
         logger.debug("writing: %s", mi_cmd_to_write)
 
-        if not mi_cmd_to_write_str.endswith("\n"):
+        if to_tty:
+            mi_cmd_to_write_nl = mi_cmd_to_write_str
+        elif not mi_cmd_to_write_str.endswith("\n"):
             mi_cmd_to_write_nl = mi_cmd_to_write_str + "\n"
         else:
             mi_cmd_to_write_nl = mi_cmd_to_write_str
@@ -288,7 +291,7 @@ class IoManager:
                     self.stdin.flush()  # type: ignore
             elif fileno == self.target_stdio:
                 if to_tty:
-                    self.target_stdio.write(mi_cmd_to_write_nl.encode())
+                    self.target_stdio.write(mi_cmd_to_write_nl)
                     self.target_stdio.flush()
             else:
                 logger.error("got unexpected fileno %d" % fileno)
