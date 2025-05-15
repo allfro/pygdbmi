@@ -1,4 +1,4 @@
-a"""This module defines the `GdbController` class
+"""This module defines the `GdbController` class
 which runs gdb as a subprocess and can write to it and read from it to get
 structured output.
 """
