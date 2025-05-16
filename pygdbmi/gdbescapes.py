@@ -102,6 +102,7 @@ _ESCAPES_RE = re.compile(
 # unescaped value.
 _NON_OCTAL_ESCAPES = {
     "'": "'",
+    "`": "`",
     "\\": "\\",
     "a": "\a",
     "b": "\b",
