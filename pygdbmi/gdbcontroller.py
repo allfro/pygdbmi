@@ -95,7 +95,7 @@ class GdbController:
         devpts = os.ttyname(slave)
 
         attrs = termios.tcgetattr(slave)
-        attrs[3] &= ~(termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHONL)
+        attrs[3] &= ~(termios.ECHO | termios.ECHOE | termios.ECHOK | termios.ECHONL | termios.ICANON)
         termios.tcsetattr(slave, termios.TCSANOW, attrs)
 
         # Use pipes to the standard streams
